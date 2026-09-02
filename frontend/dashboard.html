@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>My Files - File Sharing System</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="navbar">
+    <div class="navbar-brand">
+      <div class="logo">F</div>
+      <span>File Sharing System</span>
+    </div>
+    <div class="navbar-user">
+      <span id="userEmail"></span>
+      <button class="btn-secondary" id="logoutBtn">Log Out</button>
+    </div>
+  </div>
+
+  <div class="container">
+    <div class="status-msg" id="statusMsg"></div>
+
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="stat-label">Total Files</div>
+        <div class="stat-value" id="statTotalFiles">–</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Storage Used</div>
+        <div class="stat-value" id="statStorageUsed">–</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Active Shares</div>
+        <div class="stat-value" id="statActiveShares">–</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total Downloads</div>
+        <div class="stat-value" id="statDownloads">–</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Upload a file</h3>
+      <label class="dropzone" id="dropzone" for="fileInput">
+        <div class="dz-icon">⬆</div>
+        <div class="dz-text"><strong>Click to browse</strong> or drag and drop a file here</div>
+        <input type="file" id="fileInput" />
+      </label>
+      <div class="selected-file" id="selectedFile">
+        <span id="selectedFileName"></span>
+        <button class="btn-secondary" id="clearFileBtn" type="button">Remove</button>
+      </div>
+      <div class="progress-bar-track" id="progressTrack">
+        <div class="progress-bar-fill" id="progressFill"></div>
+      </div>
+      <button class="btn" id="uploadBtn" style="margin-top: 16px; display: none;">Upload File</button>
+    </div>
+
+    <div class="card">
+      <h3>My Files</h3>
+      <div id="filesContainer">
+        <div class="empty-state">Loading files...</div>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/config.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/api.js"></script>
+  <script>
+    requireAuth();
+    document.getElementById("userEmail").textContent = getUserEmail();
+
+    const statusMsg = document.getElementById("statusMsg");
+    const filesContainer = document.getElementById("filesContainer");
+    const fileInput = document.getElementById("fileInput");
+    const dropzone = document.getElementById("dropzone");
+    const uploadBtn = document.getElementById("uploadBtn");
+    const selectedFile = document.getElementById("selectedFile");
+    const selectedFileName = document.getElementById("selectedFileName");
+    const clearFileBtn = document.getElementById("clearFileBtn");
+    const progressTrack = document.getElementById("progressTrack");
+    const progressFill = document.getElementById("progressFill");
+
+    let currentFile = null;
+
+    function showStatus(message, type) {
+      statusMsg.textContent = message;
+      statusMsg.className = `status-msg ${type}`;
+      statusMsg.style.display = "block";
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      setTimeout(() => (statusMsg.style.display = "none"), 5000);
+    }
+
+    function formatBytes(bytes) {
+      if (!bytes) return "0 B";
+      if (bytes < 1024) return bytes + " B";
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+      return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+    }
+
+    function formatDate(isoString) {
+      const d = new Date(isoString);
+      return d.toLocaleDateString() + " " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+
+    function fileExtIcon(fileName) {
+      const ext = (fileName.split(".").pop() || "?").slice(0, 3).toUpperCase();
+      return ext;
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement("div");
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    // ---------- File selection (click + drag/drop) ----------
+
+    fileInput.addEventListener("change", () => {
+      if (fileInput.files[0]) selectFile(fileInput.files[0]);
+    });
+
+    ["dragover", "dragenter"].forEach((evt) =>
+      dropzone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        dropzone.classList.add("dragover");
+      })
+    );
+
+    ["dragleave", "drop"].forEach((evt) =>
+      dropzone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        dropzone.classList.remove("dragover");
+      })
+    );
+
+    dropzone.addEventListener("drop", (e) => {
+      const file = e.dataTransfer.files[0];
+      if (file) selectFile(file);
+    });
+
+    function selectFile(file) {
+      currentFile = file;
+      selectedFileName.textContent = `${file.name} (${formatBytes(file.size)})`;
+      selectedFile.style.display = "flex";
+      uploadBtn.style.display = "block";
+    }
+
+    clearFileBtn.addEventListener("click", () => {
+      currentFile = null;
+      fileInput.value = "";
+      selectedFile.style.display = "none";
+      uploadBtn.style.display = "none";
+    });
+
+    // ---------- Upload ----------
+
+    uploadBtn.addEventListener("click", async () => {
+      if (!currentFile) return;
+
+      uploadBtn.disabled = true;
+      uploadBtn.innerHTML = '<span class="spinner"></span>Uploading...';
+      progressTrack.style.display = "block";
+      progressFill.style.width = "0%";
+
+      try {
+        const { uploadUrl } = await requestUploadUrl(
+          currentFile.name,
+          currentFile.type || "application/octet-stream",
+          currentFile.size
+        );
+        await uploadToS3(uploadUrl, currentFile, (pct) => {
+          progressFill.style.width = pct + "%";
+        });
+        showStatus("File uploaded successfully", "success");
+        clearFileBtn.click();
+        refreshFiles();
+      } catch (err) {
+        showStatus(`Upload failed: ${err.message}`, "error");
+      } finally {
+        uploadBtn.disabled = false;
+        uploadBtn.textContent = "Upload File";
+        progressTrack.style.display = "none";
+      }
+    });
+
+    // ---------- Files list + stats ----------
+
+    async function refreshFiles() {
+      try {
+        const result = await listFiles();
+        renderFiles(result.files);
+        renderStats(result.files);
+      } catch (err) {
+        filesContainer.innerHTML = `<div class="empty-state">Failed to load files: ${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    function renderStats(files) {
+      const totalSize = files.reduce((sum, f) => sum + (f.fileSize || 0), 0);
+      const totalDownloads = files.reduce((sum, f) => sum + (f.downloadCount || 0), 0);
+      const activeShares = files.filter((f) => f.shareId).length;
+
+      document.getElementById("statTotalFiles").textContent = files.length;
+      document.getElementById("statStorageUsed").textContent = formatBytes(totalSize);
+      document.getElementById("statActiveShares").textContent = activeShares;
+      document.getElementById("statDownloads").textContent = totalDownloads;
+    }
+
+    function renderFiles(files) {
+      if (!files || files.length === 0) {
+        filesContainer.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-icon">📁</div>
+            No files yet. Upload your first file above.
+          </div>`;
+        return;
+      }
+
+      const rows = files
+        .map(
+          (file) => `
+        <tr>
+          <td>
+            <div class="file-name-cell">
+              <div class="file-icon">${fileExtIcon(file.fileName)}</div>
+              <div>${escapeHtml(file.fileName)}</div>
+            </div>
+          </td>
+          <td>${formatBytes(file.fileSize)}</td>
+          <td>${formatDate(file.uploadDate)}</td>
+          <td>${file.downloadCount}</td>
+          <td>
+            <div class="file-actions">
+              <button class="action-btn" onclick="handleDownload('${file.fileId}')">Download</button>
+              <button class="action-btn" onclick="handleShare('${file.fileId}')">Share</button>
+              <button class="action-btn danger" onclick="handleDelete('${file.fileId}')">Delete</button>
+            </div>
+            <div class="share-link-box" id="shareBox-${file.fileId}" style="display: none;"></div>
+          </td>
+        </tr>
+      `
+        )
+        .join("");
+
+      filesContainer.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Size</th>
+              <th>Uploaded</th>
+              <th>Downloads</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    // ---------- Actions ----------
+
+    async function handleDownload(fileId) {
+      try {
+        const result = await getDownloadUrl(fileId);
+        window.open(result.downloadUrl, "_blank");
+        refreshFiles();
+      } catch (err) {
+        showStatus(`Download failed: ${err.message}`, "error");
+      }
+    }
+
+    async function handleShare(fileId) {
+      try {
+        const result = await createShareLink(fileId, 24);
+        const shareUrl = `${window.location.origin}${window.location.pathname.replace(
+          "dashboard.html",
+          "shared.html"
+        )}?shareId=${result.shareId}`;
+        const box = document.getElementById(`shareBox-${fileId}`);
+        box.style.display = "flex";
+        box.innerHTML = `
+          <input type="text" readonly value="${shareUrl}" onclick="this.select()" />
+          <button class="action-btn" onclick="copyShareLink('${shareUrl}', this)">Copy</button>
+          <button class="action-btn danger" onclick="handleRevoke('${fileId}')">Revoke</button>
+        `;
+        showStatus("Share link created — expires in 24 hours", "success");
+      } catch (err) {
+        showStatus(`Failed to create share link: ${err.message}`, "error");
+      }
+    }
+
+    function copyShareLink(url, btn) {
+      navigator.clipboard.writeText(url);
+      const original = btn.textContent;
+      btn.textContent = "Copied!";
+      setTimeout(() => (btn.textContent = original), 1500);
+    }
+
+    async function handleRevoke(fileId) {
+      try {
+        await revokeShareLink(fileId);
+        document.getElementById(`shareBox-${fileId}`).style.display = "none";
+        showStatus("Share link revoked", "success");
+        refreshFiles();
+      } catch (err) {
+        showStatus(`Failed to revoke: ${err.message}`, "error");
+      }
+    }
+
+    async function handleDelete(fileId) {
+      if (!confirm("Delete this file? This cannot be undone.")) return;
+      try {
+        await deleteFile(fileId);
+        showStatus("File deleted", "success");
+        refreshFiles();
+      } catch (err) {
+        showStatus(`Delete failed: ${err.message}`, "error");
+      }
+    }
+
+    document.getElementById("logoutBtn").addEventListener("click", logout);
+
+    refreshFiles();
+  </script>
+</body>
+</html>
