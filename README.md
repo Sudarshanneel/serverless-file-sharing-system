@@ -224,4 +224,4 @@ The goal of this project is to demonstrate how a production-style file-sharing a
 
 ---
 
-⭐ If you find this project useful, consider giving it a star!
+⭐ If you find this project useful, consider giving it a star
